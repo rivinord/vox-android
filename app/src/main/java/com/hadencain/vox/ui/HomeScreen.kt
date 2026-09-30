@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,6 +25,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.InputChip
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -122,6 +124,7 @@ internal fun SetupCard(
     onRequestMic: () -> Unit,
     modelsPresent: Boolean,
     dlFailed: Boolean,
+    dlProgress: Float? = null,
     onRetryModels: () -> Unit,
     overlayGranted: Boolean,
     onRequestOverlay: () -> Unit,
@@ -154,8 +157,10 @@ internal fun SetupCard(
                 statusText = when {
                     modelsPresent -> null
                     dlFailed -> "Download failed"
+                    dlProgress != null -> "Downloading... ${(dlProgress * 100).toInt()}%"
                     else -> "Downloading over Wi-Fi (~740MB)…"
                 },
+                progress = dlProgress,
                 onClick = if (dlFailed) onRetryModels else null,
             )
             SetupRow(
@@ -184,6 +189,7 @@ private fun SetupRow(
     failed: Boolean = false,
     actionLabel: String?,
     statusText: String? = null,
+    progress: Float? = null,
     onClick: (() -> Unit)?,
 ) {
     Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
@@ -199,6 +205,14 @@ private fun SetupRow(
                     statusText,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (progress != null && !done && !failed) {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
         }
@@ -463,13 +477,7 @@ internal fun SuggestionsCard(ctx: Context, resumeTick: Int, settings: VoxSetting
     val historyFile = remember { File(ctx.filesDir, "history.jsonl") }
     var suggestions by remember { mutableStateOf(Mine.Suggestions(emptyList(), emptyList())) }
     LaunchedEffect(resumeTick, settings.vocab, settings.corrections) {
-        // File I/O + JSON parse + the O(n*m) LCS alignment in Mine.suggest are too heavy for
-        // the main thread on every resume/Add tap -- push the work to IO and only touch
-        // Compose state with the result.
         suggestions = withContext(Dispatchers.IO) {
-            // aiedit rows pair a spoken instruction with unrelated LLM output; aligning them
-            // as raw->cleaned produces accidental "corrections" that would then get applied
-            // to every future dictation (Dictionary.applyCorrections is global, word-boundary).
             val entries = History(historyFile, settings.historyMax).readAll().filter { it.mode != "aiedit" }
             Mine.suggest(entries, settings.vocab, settings.corrections)
         }

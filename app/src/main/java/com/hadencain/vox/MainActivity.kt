@@ -89,13 +89,9 @@ class MainActivity : ComponentActivity() {
         handleAutostart(intent)
     }
 
-    /** Reboot-resume hook: BootReceiver posts a notification (since a mic FGS can't
-     *  auto-start off BOOT_COMPLETED on Android 14+); tapping it opens this activity with
-     *  EXTRA_AUTOSTART=true, which is a legal, visible, user-initiated place to start
-     *  VoxService. Never auto-starts on a plain app open -- only when the extra is set. */
     private fun handleAutostart(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_AUTOSTART, false) != true) return
-        intent.removeExtra(EXTRA_AUTOSTART) // consume so it doesn't re-fire on recreation
+        intent.removeExtra(EXTRA_AUTOSTART)
         if (VoxService.isRunning) return
         val setupComplete = Settings.canDrawOverlays(this) &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED &&
@@ -122,8 +118,6 @@ private fun VoxTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = colors, content = content)
 }
 
-/** Bumps every time the host activity passes through ON_RESUME -- drives re-checks of
- *  permission/accessibility state that can change while the app is backgrounded. */
 @Composable
 private fun rememberResumeTick(): Int {
     var tick by remember { mutableStateOf(0) }
@@ -147,7 +141,6 @@ private fun VoxApp() {
         mi.totalMem
     }
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
-        // RAM gate: hard stop below the measured floor -- render nothing else.
         if (totalMem < 5_300_000_000L) {
             RamBlockedScreen(totalMem)
         } else {
@@ -184,7 +177,6 @@ private fun HomeScreen() {
         settingsDirty = true
     }
 
-    // -- service running state, polled while this screen is alive --
     var isRunning by remember { mutableStateOf(VoxService.isRunning) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -193,7 +185,6 @@ private fun HomeScreen() {
         }
     }
 
-    // -- permission / setup state, re-checked on resume --
     var micGranted by remember {
         mutableStateOf(
             ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
@@ -216,10 +207,11 @@ private fun HomeScreen() {
             PackageManager.PERMISSION_GRANTED
     }
 
-    // -- model download state machine (ported from OnboardingActivity) --
+    // -- model download state machine --
     var downloadIds by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     var dlFailed by remember { mutableStateOf<Set<String>>(emptySet()) }
     var modelsPresent by remember { mutableStateOf(ModelDownloader.allPresent(ctx)) }
+    var dlProgress by remember { mutableStateOf<Float?>(null) } // <-- ДОБАВЛЕНО: Состояние прогресса
 
     fun startMissingDownloads() {
         val newIds = downloadIds.toMutableMap()
@@ -256,9 +248,19 @@ private fun HomeScreen() {
     }
 
     fun pollDownloadsOnce() {
-        if (downloadIds.isEmpty()) return
+        if (downloadIds.isEmpty()) {
+            dlProgress = null
+            return
+        }
         val newIds = downloadIds.toMutableMap()
         val newFailed = dlFailed.toMutableSet()
+        
+        // <-- ДОБАВЛЕНО: Подсчет скачанных байт
+        var totalBytes = 0L
+        var downloadedBytes = 0L
+        var isDownloading = false
+        val dm = ctx.getSystemService(android.app.DownloadManager::class.java)
+
         for ((name, id) in downloadIds) {
             val spec = ModelDownloader.MODELS.first { it.fileName == name }
             when (ModelDownloader.status(ctx, id).first) {
@@ -272,7 +274,27 @@ private fun HomeScreen() {
                     newFailed.add(name)
                     newIds.remove(name)
                 }
-                ModelDownloader.DlState.RUNNING -> {}
+                ModelDownloader.DlState.RUNNING -> {
+                    // Читаем байты из системы Android напрямую
+                    if (dm != null) {
+                        val query = android.app.DownloadManager.Query().setFilterById(id)
+                        dm.query(query)?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                val bytesDlCol = cursor.getColumnIndex(android.app.DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+                                val bytesTotalCol = cursor.getColumnIndex(android.app.DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+                                if (bytesDlCol != -1 && bytesTotalCol != -1) {
+                                    val bDl = cursor.getLong(bytesDlCol)
+                                    val bTotal = cursor.getLong(bytesTotalCol)
+                                    if (bTotal > 0) {
+                                        downloadedBytes += bDl
+                                        totalBytes += bTotal
+                                        isDownloading = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 ModelDownloader.DlState.NONE -> {
                     ModelDownloader.forget(ctx, spec)
                     newFailed.add(name)
@@ -280,6 +302,14 @@ private fun HomeScreen() {
                 }
             }
         }
+        
+        // <-- ДОБАВЛЕНО: Обновление шкалы
+        if (isDownloading && totalBytes > 0) {
+            dlProgress = downloadedBytes.toFloat() / totalBytes.toFloat()
+        } else if (newIds.isEmpty()) {
+            dlProgress = null
+        }
+
         downloadIds = newIds
         dlFailed = newFailed
         modelsPresent = ModelDownloader.allPresent(ctx)
@@ -295,7 +325,6 @@ private fun HomeScreen() {
 
     val setupComplete = overlayGranted && micGranted && modelsPresent
 
-    // -- start / stop / restart --
     fun startVox() {
         ctx.startForegroundService(Intent(ctx, VoxService::class.java))
     }
@@ -340,6 +369,7 @@ private fun HomeScreen() {
                 },
                 modelsPresent = modelsPresent,
                 dlFailed = dlFailed.isNotEmpty(),
+                dlProgress = dlProgress, // <-- ДОБАВЛЕНО: Передаем прогресс в интерфейс
                 onRetryModels = {
                     dlFailed = emptySet()
                     startMissingDownloads()
