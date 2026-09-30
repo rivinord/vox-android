@@ -39,7 +39,6 @@ object ModelDownloader {
     fun enqueue(ctx: Context, spec: ModelSpec): Long {
         val dm = ctx.getSystemService(DownloadManager::class.java)
         val req = DownloadManager.Request(Uri.parse(spec.url))
-            .setAllowedNetworkTypes(DownloadManager.Request.NETWORK_WIFI)
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
             .setTitle("Vox model: ${spec.fileName}")
             .setDestinationInExternalFilesDir(ctx, null, spec.fileName)

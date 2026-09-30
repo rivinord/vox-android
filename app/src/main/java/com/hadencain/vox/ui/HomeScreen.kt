@@ -125,6 +125,7 @@ internal fun SetupCard(
     modelsPresent: Boolean,
     dlFailed: Boolean,
     dlProgress: Float? = null,
+    dlStatusText: String? = null,
     onRetryModels: () -> Unit,
     overlayGranted: Boolean,
     onRequestOverlay: () -> Unit,
@@ -157,8 +158,9 @@ internal fun SetupCard(
                 statusText = when {
                     modelsPresent -> null
                     dlFailed -> "Download failed"
+                    dlStatusText != null -> dlStatusText
                     dlProgress != null -> "Downloading... ${(dlProgress * 100).toInt()}%"
-                    else -> "Downloading over Wi-Fi (~740MB)…"
+                    else -> "Downloading models (~740MB)…"
                 },
                 progress = dlProgress,
                 onClick = if (dlFailed) onRetryModels else null,

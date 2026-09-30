@@ -57,8 +57,6 @@ import kotlinx.coroutines.delay
 import java.io.File
 
 // ---- palette -------------------------------------------------------------
-// Shared with com.hadencain.vox.ui composables (StatusCard / SetupCard rows).
-
 private val VoxIndigo = Color(0xFF3D5AFE)
 private val VoxBackground = Color(0xFF0E0F13)
 private val VoxSurface = Color(0xFF1A1C22)
@@ -75,11 +73,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            VoxTheme {
-                VoxApp()
-            }
-        }
+        setContent { VoxTheme { VoxApp() } }
         handleAutostart(intent)
     }
 
@@ -141,11 +135,7 @@ private fun VoxApp() {
         mi.totalMem
     }
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
-        if (totalMem < 5_300_000_000L) {
-            RamBlockedScreen(totalMem)
-        } else {
-            HomeScreen()
-        }
+        if (totalMem < 5_300_000_000L) RamBlockedScreen(totalMem) else HomeScreen()
     }
 }
 
@@ -186,32 +176,26 @@ private fun HomeScreen() {
     }
 
     var micGranted by remember {
-        mutableStateOf(
-            ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED
-        )
+        mutableStateOf(ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
     }
     var overlayGranted by remember { mutableStateOf(Settings.canDrawOverlays(ctx)) }
     var a11yGranted by remember { mutableStateOf(VoxAccessibilityService.instance != null) }
+    
     LaunchedEffect(resumeTick) {
-        micGranted = ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED
+        micGranted = ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         overlayGranted = Settings.canDrawOverlays(ctx)
         a11yGranted = VoxAccessibilityService.instance != null
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) {
-        micGranted = ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        micGranted = ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     }
 
-    // -- model download state machine --
     var downloadIds by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
     var dlFailed by remember { mutableStateOf<Set<String>>(emptySet()) }
     var modelsPresent by remember { mutableStateOf(ModelDownloader.allPresent(ctx)) }
-    var dlProgress by remember { mutableStateOf<Float?>(null) } // <-- ДОБАВЛЕНО: Состояние прогресса
+    var dlProgress by remember { mutableStateOf<Float?>(null) }
+    var dlStatusText by remember { mutableStateOf<String?>(null) }
 
     fun startMissingDownloads() {
         val newIds = downloadIds.toMutableMap()
@@ -224,21 +208,14 @@ private fun HomeScreen() {
                 continue
             }
             when (ModelDownloader.status(ctx, existingId).first) {
-                ModelDownloader.DlState.NONE ->
-                    newIds[spec.fileName] = ModelDownloader.enqueue(ctx, spec)
-                ModelDownloader.DlState.RUNNING ->
-                    newIds[spec.fileName] = existingId
+                ModelDownloader.DlState.NONE -> newIds[spec.fileName] = ModelDownloader.enqueue(ctx, spec)
+                ModelDownloader.DlState.RUNNING -> newIds[spec.fileName] = existingId
                 ModelDownloader.DlState.SUCCESS -> {
-                    if (ModelDownloader.finalize(ctx, spec)) {
-                        ModelDownloader.forget(ctx, spec)
-                    } else {
-                        ModelDownloader.forget(ctx, spec)
-                        newFailed.add(spec.fileName)
-                    }
+                    if (ModelDownloader.finalize(ctx, spec)) ModelDownloader.forget(ctx, spec)
+                    else { ModelDownloader.forget(ctx, spec); newFailed.add(spec.fileName) }
                 }
                 ModelDownloader.DlState.FAILED -> {
-                    ModelDownloader.forget(ctx, spec)
-                    newFailed.add(spec.fileName)
+                    ModelDownloader.forget(ctx, spec); newFailed.add(spec.fileName)
                 }
             }
         }
@@ -250,15 +227,17 @@ private fun HomeScreen() {
     fun pollDownloadsOnce() {
         if (downloadIds.isEmpty()) {
             dlProgress = null
+            dlStatusText = null
             return
         }
         val newIds = downloadIds.toMutableMap()
         val newFailed = dlFailed.toMutableSet()
         
-        // <-- ДОБАВЛЕНО: Подсчет скачанных байт
         var totalBytes = 0L
         var downloadedBytes = 0L
         var isDownloading = false
+        var currentStatusText: String? = null
+
         val dm = ctx.getSystemService(android.app.DownloadManager::class.java)
 
         for ((name, id) in downloadIds) {
@@ -275,11 +254,21 @@ private fun HomeScreen() {
                     newIds.remove(name)
                 }
                 ModelDownloader.DlState.RUNNING -> {
-                    // Читаем байты из системы Android напрямую
                     if (dm != null) {
                         val query = android.app.DownloadManager.Query().setFilterById(id)
                         dm.query(query)?.use { cursor ->
                             if (cursor.moveToFirst()) {
+                                val statusCol = cursor.getColumnIndex(android.app.DownloadManager.COLUMN_STATUS)
+                                val reasonCol = cursor.getColumnIndex(android.app.DownloadManager.COLUMN_REASON)
+                                
+                                if (statusCol != -1) {
+                                    val status = cursor.getInt(statusCol)
+                                    if (status == android.app.DownloadManager.STATUS_PENDING) currentStatusText = "Pending... (Connecting)"
+                                    if (status == android.app.DownloadManager.STATUS_PAUSED) {
+                                        currentStatusText = "Paused by system (Network issue?)"
+                                    }
+                                }
+
                                 val bytesDlCol = cursor.getColumnIndex(android.app.DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
                                 val bytesTotalCol = cursor.getColumnIndex(android.app.DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
                                 if (bytesDlCol != -1 && bytesTotalCol != -1) {
@@ -288,6 +277,9 @@ private fun HomeScreen() {
                                     if (bTotal > 0) {
                                         downloadedBytes += bDl
                                         totalBytes += bTotal
+                                        isDownloading = true
+                                    } else if (bDl > 0) {
+                                        downloadedBytes += bDl
                                         isDownloading = true
                                     }
                                 }
@@ -303,10 +295,13 @@ private fun HomeScreen() {
             }
         }
         
-        // <-- ДОБАВЛЕНО: Обновление шкалы
         if (isDownloading && totalBytes > 0) {
             dlProgress = downloadedBytes.toFloat() / totalBytes.toFloat()
-        } else if (newIds.isEmpty()) {
+            dlStatusText = "Downloading... ${(dlProgress!! * 100).toInt()}%"
+        } else if (currentStatusText != null) {
+            dlProgress = 0f
+            dlStatusText = currentStatusText
+        } else {
             dlProgress = null
         }
 
@@ -325,103 +320,59 @@ private fun HomeScreen() {
 
     val setupComplete = overlayGranted && micGranted && modelsPresent
 
-    fun startVox() {
-        ctx.startForegroundService(Intent(ctx, VoxService::class.java))
-    }
-    fun stopVox() {
-        ctx.startService(Intent(ctx, VoxService::class.java).setAction(VoxService.ACTION_STOP))
-    }
-    fun restartVox() {
-        stopVox()
-        Handler(Looper.getMainLooper()).postDelayed({
-            ctx.startForegroundService(Intent(ctx, VoxService::class.java))
-        }, 700)
-        settingsDirty = false
-    }
-
-    val showHistory = settings.saveHistory || historyFile.exists()
-
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         HeaderSection()
 
         StatusCard(
-            isRunning = isRunning,
-            canStart = setupComplete,
-            settingsDirty = settingsDirty,
-            onStart = { startVox() },
-            onStop = { stopVox() },
-            onRestart = { restartVox() },
+            isRunning = isRunning, canStart = setupComplete, settingsDirty = settingsDirty,
+            onStart = { ctx.startForegroundService(Intent(ctx, VoxService::class.java)) },
+            onStop = { ctx.startService(Intent(ctx, VoxService::class.java).setAction(VoxService.ACTION_STOP)) },
+            onRestart = {
+                ctx.startService(Intent(ctx, VoxService::class.java).setAction(VoxService.ACTION_STOP))
+                Handler(Looper.getMainLooper()).postDelayed({ ctx.startForegroundService(Intent(ctx, VoxService::class.java)) }, 700)
+                settingsDirty = false
+            },
         )
 
         if (!setupComplete) {
             SetupCard(
                 micGranted = micGranted,
-                onRequestMic = {
-                    permissionLauncher.launch(
-                        arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
-                    )
-                },
+                onRequestMic = { permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)) },
                 modelsPresent = modelsPresent,
                 dlFailed = dlFailed.isNotEmpty(),
-                dlProgress = dlProgress, // <-- ДОБАВЛЕНО: Передаем прогресс в интерфейс
-                onRetryModels = {
-                    dlFailed = emptySet()
-                    startMissingDownloads()
-                },
+                dlProgress = dlProgress,
+                dlStatusText = dlStatusText,
+                onRetryModels = { dlFailed = emptySet(); startMissingDownloads() },
                 overlayGranted = overlayGranted,
-                onRequestOverlay = {
-                    ctx.startActivity(
-                        Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}"))
-                    )
-                },
+                onRequestOverlay = { ctx.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}"))) },
                 a11yGranted = a11yGranted,
-                onRequestA11y = {
-                    ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                },
+                onRequestA11y = { ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
             )
         }
 
         CleanupCard(settings) { updateSettings(it) }
         BehaviorCard(settings) { updateSettings(it) }
         DictionaryCard(settings) { updateSettings(it) }
-        if (showHistory) SuggestionsCard(ctx, resumeTick, settings) { updateSettings(it) }
-        if (showHistory) HistoryCard(ctx, resumeTick, settings.historyMax)
+        if (settings.saveHistory || historyFile.exists()) SuggestionsCard(ctx, resumeTick, settings) { updateSettings(it) }
+        if (settings.saveHistory || historyFile.exists()) HistoryCard(ctx, resumeTick, settings.historyMax)
 
         FooterSection()
     }
 }
 
-// ---- header / footer --------------------------------------------------------
-
 @Composable
 private fun HeaderSection() {
     Column {
-        Text(
-            "Vox",
-            style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.onBackground,
-        )
+        Text("Vox", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(4.dp))
-        Text(
-            "On-device voice typing. Nothing leaves your phone.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Text("On-device voice typing. Nothing leaves your phone.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
 private fun FooterSection() {
-    Text(
-        "v0.1 · 100% on-device · your speech never leaves this phone.",
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp),
-    )
+    Text("v0.1 · 100% on-device · your speech never leaves this phone.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp))
 }
