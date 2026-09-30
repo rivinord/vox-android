@@ -56,7 +56,6 @@ import com.hadencain.vox.ui.SuggestionsCard
 import kotlinx.coroutines.delay
 import java.io.File
 
-// ---- palette -------------------------------------------------------------
 private val VoxIndigo = Color(0xFF3D5AFE)
 private val VoxBackground = Color(0xFF0E0F13)
 private val VoxSurface = Color(0xFF1A1C22)
@@ -150,8 +149,6 @@ private fun RamBlockedScreen(totalMem: Long) {
     }
 }
 
-// ---- home screen -----------------------------------------------------------
-
 @Composable
 private fun HomeScreen() {
     val ctx = LocalContext.current
@@ -195,7 +192,7 @@ private fun HomeScreen() {
     var dlFailed by remember { mutableStateOf<Set<String>>(emptySet()) }
     var modelsPresent by remember { mutableStateOf(ModelDownloader.allPresent(ctx)) }
     var dlProgress by remember { mutableStateOf<Float?>(null) }
-    var dlStatusText by remember { mutableStateOf<String?>(null) }
+    var dlStatusText by remember { mutableStateOf<String?>("Starting download…") }
 
     fun startMissingDownloads() {
         val newIds = downloadIds.toMutableMap()
@@ -226,8 +223,10 @@ private fun HomeScreen() {
 
     fun pollDownloadsOnce() {
         if (downloadIds.isEmpty()) {
-            dlProgress = null
-            dlStatusText = null
+            if (modelsPresent) {
+                dlProgress = null
+                dlStatusText = null
+            }
             return
         }
         val newIds = downloadIds.toMutableMap()
@@ -235,7 +234,7 @@ private fun HomeScreen() {
         
         var totalBytes = 0L
         var downloadedBytes = 0L
-        var isDownloading = false
+        var hasActiveDownloads = false
         var currentStatusText: String? = null
 
         val dm = ctx.getSystemService(android.app.DownloadManager::class.java)
@@ -254,6 +253,7 @@ private fun HomeScreen() {
                     newIds.remove(name)
                 }
                 ModelDownloader.DlState.RUNNING -> {
+                    hasActiveDownloads = true
                     if (dm != null) {
                         val query = android.app.DownloadManager.Query().setFilterById(id)
                         dm.query(query)?.use { cursor ->
@@ -263,9 +263,10 @@ private fun HomeScreen() {
                                 
                                 if (statusCol != -1) {
                                     val status = cursor.getInt(statusCol)
-                                    if (status == android.app.DownloadManager.STATUS_PENDING) currentStatusText = "Pending... (Connecting)"
-                                    if (status == android.app.DownloadManager.STATUS_PAUSED) {
-                                        currentStatusText = "Paused by system (Network issue?)"
+                                    if (status == android.app.DownloadManager.STATUS_PENDING) {
+                                        currentStatusText = "Connecting to server…"
+                                    } else if (status == android.app.DownloadManager.STATUS_PAUSED) {
+                                        currentStatusText = "Paused: Waiting for stable network"
                                     }
                                 }
 
@@ -277,10 +278,8 @@ private fun HomeScreen() {
                                     if (bTotal > 0) {
                                         downloadedBytes += bDl
                                         totalBytes += bTotal
-                                        isDownloading = true
                                     } else if (bDl > 0) {
                                         downloadedBytes += bDl
-                                        isDownloading = true
                                     }
                                 }
                             }
@@ -295,14 +294,21 @@ private fun HomeScreen() {
             }
         }
         
-        if (isDownloading && totalBytes > 0) {
-            dlProgress = downloadedBytes.toFloat() / totalBytes.toFloat()
-            dlStatusText = "Downloading... ${(dlProgress!! * 100).toInt()}%"
-        } else if (currentStatusText != null) {
-            dlProgress = 0f
-            dlStatusText = currentStatusText
+        if (hasActiveDownloads) {
+            if (totalBytes > 0) {
+                val calc = downloadedBytes.toFloat() / totalBytes.toFloat()
+                dlProgress = calc.coerceIn(0.01f, 1f)
+                val mbDownloaded = downloadedBytes / (1024 * 1024)
+                val mbTotal = totalBytes / (1024 * 1024)
+                dlStatusText = "Downloading: $mbDownloaded MB / $mbTotal MB (${(calc * 100).toInt()}%)"
+            } else {
+                // Если байты еще не пошли — все равно показываем полосу и пишем статус подключения!
+                dlProgress = 0.05f 
+                dlStatusText = currentStatusText ?: "Connecting to server (0%)…"
+            }
         } else {
             dlProgress = null
+            dlStatusText = null
         }
 
         downloadIds = newIds
@@ -366,7 +372,7 @@ private fun HomeScreen() {
 @Composable
 private fun HeaderSection() {
     Column {
-        Text("Vox", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onBackground)
+        Text("Vox [Modded]", style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(4.dp))
         Text("On-device voice typing. Nothing leaves your phone.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
